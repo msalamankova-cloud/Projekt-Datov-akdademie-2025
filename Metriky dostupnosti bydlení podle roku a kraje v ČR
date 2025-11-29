@@ -1,0 +1,55 @@
+#Kódy použité k projektu Porodnost a bydlení# Projekt-Datová-akdademie-2025
+
+**Ke konceptu dostupnosti bydlení jsme přistoupily vytvořením dvou ukazatelů:**
+1. Podíl měsíčního příjmu modelové domácnosti, který představuje nájem referenčního 65 m² bytu v daném roce a kraji.
+**Jak jsme počítaly:** příjem modelové domácnosti jsem počítala jako hypotetickou rodinu, v níž jeden z rodičů pracuje za mediánovou mzdu v daném kraji a roce a druhý z rodičů pobírá průměrný rodičovský příspěvek. Rodičovský příspěvek jsme po zjednodušení počítaly za rok 2024 jako 10 tis. Kč. Údaj jsme arbitrárně určily s ohledem na rozpočítání příspěvků i v dřívějších letech před tím, než se celková výše rodičovského příspěvku navyšovala na nynějších 350 tis. Kč.
+Ceny, které jsme zpracovávaly v datasetu Apify jsou **nabídkové** ceny ve scrapovaných inzerátech. Proto je potřeba naše výpočty brát skutečně jako model a nikoli věrný odraz reality, protože jsme neměly prostor dostatečně zohlednit všechny faktory, které do situace vstupují.
+Nejprve jsme si vypočítaly cenu za metr čtvereční po krajích už ve Snowflake. Potom jsem pokračovala s výpočty různých metrik v Tableau. Prvně bylo potřeba vypočítat cenu za referenční byt, což jsem spočítala pro každý rok a kraj zvlášť následovně:
+
+
+{ FIXED [ROK], [KRAJ] :
+	MAX(
+    	IF [TYP_NABIDKY] = 'rent' THEN
+            65 * [MEDIAN_CENA_ZA_M_KRAJ]
+    	END
+	)
+}
+ 
+A s tímto základní výpočtem bylo možné vypočítat si poměr nájmu a referenční mzdy + rodičovského příspěvku:
+
+*MM_MZDA = mediánová mzda
+
+IF [TYP_NABIDKY] = 'rent'
+AND NOT ISNULL([Najem_cena_referencni_byt])
+AND NOT ISNULL([MM_MZDA]) THEN
+    100 * [Najem_cena_referencni_byt] / ([MM_MZDA]+10000)
+END
+Tento výpočet máme i ve variantě podle věkových kategorií:
+IF [TYP_NABIDKY] = 'rent'
+AND NOT ISNULL([KAT_MM_MZDA]) 
+AND NOT ISNULL([Najem_cena_referencni_byt]) THEN
+    100 * [Najem_cena_referencni_byt] / )([KAT_MM_MZDA]+10000)
+END
+ 
+2.       Počet ročních mediánových mezd nutných ke koupi stejné nemovitosti (tzn. obytné nemovitosti o rozloze 65 m2).
+Další část trhu s bydlením tvoří prodeje, zde jsme šly stejnou cestou - nejdřív vypočítat cenu bytu 65 m2 na prodej v daném roce a kraji:
+{ FIXED [ROK], [KRAJ] :
+	MAX(
+    	IF [TYP_NABIDKY] = 'sale' THEN
+            65 * [MEDIAN_CENA_ZA_M_KRAJ]
+    	END
+	)
+}
+ 
+A v druhé vrstvě vypočítat kolik mediánových platů v daném roce a kraji potřebuji na nákup referenčního bytu 65 m2 v daném roce a kraji rovnou i pro věkové skupiny.
+Tady jsme počítaly příjem pouze za jednotlivce pro přehlednější interpretaci výsledku.
+*KAT_MM_MZDA = je mediánová mzda vypočítaná zvlášť pro věkové skupiny (15-19, 20-24, 25-29, 30-34, 35-39, 40-44 let) v jednotlivých krajích a letech 2017-2023
+{ FIXED [ROK], [KRAJ] :
+	MAX(
+    	IF [TYP_NABIDKY] = 'sale'
+AND NOT ISNULL([KAT_MM_MZDA])
+AND NOT ISNULL([Prodej_cena_referencni_byt])
+THEN
+            [Prodej_cena_referencni_byt]/[KAT_MM_MZDA]
+    	END
+
