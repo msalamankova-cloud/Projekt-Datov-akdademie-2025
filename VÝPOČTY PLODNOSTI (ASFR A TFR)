@@ -1,0 +1,146 @@
+--VÝPOČTY PLODNOSTI (ASFR A TFR)
+--KVŮLI PŘESNOSTI VÝPOČTU VYNECHÁVÁM OKRAJOVÉ KATEGORIE Z VÝPOČTU PLODNOSTI (-14 A 45+ DÁVÁM PRYČ)
+
+--VÝPOČET ASFR (AGE SPECIFIC FERTILITY RATE - POČET DĚTÍ NA 1000 ŽEN V DANÉ VĚKOVÉ KOHORTĚ)
+--zkouška
+/*WITH src AS (
+  SELECT
+    TRIM(UPPER("vek_kat")) AS VEK_KAT,
+    "kraj"                  AS KRAJ,
+    "rok"                   AS ROK,
+    "zeny"                  AS ZENY,
+    "zive_narozeni_n"       AS ZIVE_NAROZENI_N
+  FROM KBC_EUW3_2105.WORKSPACE_40152392.CSU_KVM
+),
+-- sloučení duplicit (stejné kraj–rok–věk)
+cleaned AS (
+  SELECT
+    VEK_KAT, KRAJ, ROK,
+    SUM(ZENY)            AS ZENY,
+    SUM(ZIVE_NAROZENI_N) AS NAROZENI
+  FROM src
+  GROUP BY 1,2,3
+),
+bands AS (
+  SELECT
+    *,
+    CASE
+      WHEN VEK_KAT IN ('15-19','20-24','25-29','30-34','35-39','40-44') THEN 5
+      ELSE 0
+    END AS BAND_WIDTH
+  FROM cleaned
+)
+SELECT
+  KRAJ,
+  ROK,
+  VEK_KAT,
+  NAROZENI,
+  ZENY,
+  ROUND((NAROZENI / NULLIF(ZENY,0)) * 1000, 3) AS ASFR_PER_1000
+FROM bands
+WHERE VEK_KAT IN ('15-19','20-24','25-29','30-34','35-39','40-44')
+ORDER BY KRAJ, ROK, VEK_KAT;
+*/
+--PŘIPOJENÍ ASFR
+ALTER TABLE KBC_EUW3_2105.WORKSPACE_40152392."CSU_KVM"
+  ADD COLUMN IF NOT EXISTS "ASFR_PER_1000" NUMBER(18,3);
+  
+UPDATE KBC_EUW3_2105.WORKSPACE_40152392."CSU_KVM" dst
+SET "ASFR_PER_1000" = src_calc.ASFR_PER_1000
+FROM (
+  SELECT
+    UPPER(TRIM("vek_kat")) AS VEK_KAT,
+    "kraj"                 AS KRAJ,
+    "rok"                  AS ROK,
+    ROUND((SUM("zive_narozeni_n") / NULLIF(SUM("zeny"),0)) * 1000, 3) AS ASFR_PER_1000
+  FROM KBC_EUW3_2105.WORKSPACE_40152392."CSU_KVM"
+  WHERE UPPER(TRIM("vek_kat")) IN ('15-19','20-24','25-29','30-34','35-39','40-44')
+  GROUP BY 1,2,3
+) src_calc
+WHERE UPPER(TRIM(dst."vek_kat")) = src_calc.VEK_KAT
+  AND dst."kraj" = src_calc.KRAJ
+  AND dst."rok"  = src_calc.ROK;
+  --UPDATE 810 ŘÁDKŮ
+
+--- VÝPOČET TFR (TOTAL FERTILITY RATE - POČET DĚTÍ NA JEDNU ŽENU V DANÉM VĚKU)
+-- *TFR* = ∑(ASFR × 5) / 1000, kde ASFR je „na 1 000 žen“ (za věky 15–44)
+-- x 5 je kvůli pětiletým věkovým skupinám ve VEK_KAT
+--opět neberu v úvahu kategorie pod 15 a nad 45 a počítám pro kombinaci kraj, věková skupina, rok 1:1:1
+--zase zkouška
+/*
+WITH births AS (            -- zdroj: porody podle věku matky
+  SELECT
+    UPPER(TRIM("vek_matky")) AS VEK,
+    "kraj"                   AS KRAJ,
+    "rok"                    AS ROK,
+    SUM("zive_narozeni_n")   AS NAROZENI
+  FROM KBC_EUW3_2105.WORKSPACE_40152392."CSU_kraje_veky_maminy"
+  GROUP BY 1,2,3
+),
+women AS (                  -- zdroj: počet žen podle věkových skupin
+  SELECT
+    UPPER(TRIM("vek_kat")) AS VEK,
+    "kraj"                 AS KRAJ,
+    "rok"                  AS ROK,
+    SUM("zeny")            AS ZENY
+  FROM KBC_EUW3_2105.WORKSPACE_40152392."CSU_KVM"
+  GROUP BY 1,2,3
+),
+f AS (                       -- spojení 1:1 na stejné kategorie
+  SELECT
+    w.KRAJ, w.ROK, w.VEK,
+    COALESCE(b.NAROZENI, 0) AS NAROZENI,
+    w.ZENY,
+    CASE WHEN w.VEK IN ('15-19','20-24','25-29','30-34','35-39','40-44') THEN 5 ELSE 0 END AS BAND_WIDTH
+  FROM women w
+  LEFT JOIN births b
+    ON b.KRAJ = w.KRAJ AND b.ROK = w.ROK AND b.VEK = w.VEK
+)
+SELECT
+  KRAJ, ROK,
+  ROUND(SUM( (NAROZENI / NULLIF(ZENY,0)) * BAND_WIDTH ), 3) AS TFR
+FROM f
+WHERE VEK IN ('15-19','20-24','25-29','30-34','35-39','40-44')  -- zde se „odřezávají“ -14 a 45+
+GROUP BY KRAJ, ROK
+ORDER BY KRAJ, ROK;
+;
+
+*/
+--NAČTENÍ TFR
+
+ALTER TABLE KBC_EUW3_2105.WORKSPACE_40152392."CSU_KVM"
+  ADD COLUMN IF NOT EXISTS "TFR" NUMBER(18,3);
+
+UPDATE KBC_EUW3_2105.WORKSPACE_40152392."CSU_KVM" dst
+SET "TFR" = t.TFR
+FROM (
+  WITH births AS (
+    SELECT UPPER(TRIM("vek_matky")) AS VEK, "kraj" AS KRAJ, "rok" AS ROK,
+           SUM("zive_narozeni_n")   AS NAROZENI
+    FROM KBC_EUW3_2105.WORKSPACE_40152392."CSU_kraje_veky_maminy"
+    GROUP BY 1,2,3
+  ),
+  women AS (
+    SELECT UPPER(TRIM("vek_kat")) AS VEK, "kraj" AS KRAJ, "rok" AS ROK,
+           SUM("zeny")            AS ZENY
+    FROM KBC_EUW3_2105.WORKSPACE_40152392."CSU_KVM"
+    GROUP BY 1,2,3
+  ),
+  f AS (
+    SELECT w.KRAJ, w.ROK, w.VEK,
+           COALESCE(b.NAROZENI,0) AS NAROZENI,
+           w.ZENY,
+           CASE WHEN w.VEK IN ('15-19','20-24','25-29','30-34','35-39','40-44') THEN 5 ELSE 0 END AS BAND_WIDTH
+    FROM women w
+    LEFT JOIN births b
+      ON b.KRAJ = w.KRAJ AND b.ROK = w.ROK AND b.VEK = w.VEK
+  )
+  SELECT
+    KRAJ, ROK,
+    ROUND(SUM( (NAROZENI / NULLIF(ZENY,0)) * BAND_WIDTH ), 3) AS TFR
+  FROM f
+  WHERE VEK IN ('15-19','20-24','25-29','30-34','35-39','40-44')
+  GROUP BY KRAJ, ROK
+) t
+WHERE dst."kraj" = t.KRAJ
+  AND dst."rok"  = t.ROK;
